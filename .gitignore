@@ -11,3 +11,8 @@ server/uploads/theme/*
 !server/uploads/theme/.gitkeep
 *.log
 .DS_Store
+
+venv/
+.venv/
+__pycache__/
+*.pyc

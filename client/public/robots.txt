@@ -1,0 +1,12 @@
+User-agent: *
+Disallow: /admin/
+Disallow: /gio-hang
+Disallow: /dat-hang-thanh-cong
+Disallow: /dat-lai-mat-khau
+Disallow: /so-sanh
+
+# Đường dẫn tương đối - chỉ đúng khi client và server API cùng chung 1 domain
+# lúc deploy (vd VPS + Nginx reverse proxy). Nếu client/server ở 2 domain
+# khác nhau (vd client Vercel, server Railway riêng), sửa lại thành URL đầy
+# đủ của domain server, ví dụ: Sitemap: https://api.dienmaynk.com/sitemap.xml
+Sitemap: /sitemap.xml

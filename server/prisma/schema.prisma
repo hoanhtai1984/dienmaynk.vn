@@ -1,0 +1,438 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum Badge {
+  BAN_CHAY_NHAT
+  SAP_CHAY_HANG
+  VUA_MO_BAN
+  MOI
+}
+
+enum PaymentMethod {
+  COD
+  BANK_TRANSFER
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  SHIPPING
+  COMPLETED
+  CANCELLED
+}
+
+enum ContactSubject {
+  TU_VAN
+  BAO_HANH
+  DON_HANG
+  KHAC
+}
+
+enum ContactStatus {
+  NEW
+  RESOLVED
+}
+
+model Post {
+  id          Int      @id @default(autoincrement())
+  slug        String   @unique
+  title       String
+  excerpt     String   @db.Text
+  content     String   @db.Text
+  image       String?
+  category    String
+  publishedAt DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Category {
+  id            Int           @id @default(autoincrement())
+  slug          String        @unique
+  name          String
+  icon          String?
+  position      Int           @default(0)
+  subCategories SubCategory[]
+  products      Product[]
+}
+
+model SubCategory {
+  id               Int              @id @default(autoincrement())
+  slug             String           @unique
+  name             String
+  icon             String?
+  position         Int              @default(0)
+  category         Category         @relation(fields: [categoryId], references: [id])
+  categoryId       Int
+  subSubCategories SubSubCategory[]
+  products         Product[]
+}
+
+model SubSubCategory {
+  id            Int         @id @default(autoincrement())
+  slug          String      @unique
+  name          String
+  icon          String?
+  position      Int         @default(0)
+  subCategory   SubCategory @relation(fields: [subCategoryId], references: [id])
+  subCategoryId Int
+  products      Product[]
+}
+
+model Product {
+  id              Int                    @id @default(autoincrement())
+  name            String
+  // Dạng "ten-san-pham-<id>" cho URL thân thiện SEO - luôn có id thật ở
+  // cuối nên không bao giờ đụng hàng dù tên trùng nhau, và URL vẫn tra cứu
+  // đúng ngay cả khi tên đổi sau này (xem server/src/utils/slugify.js).
+  slug            String                 @unique
+  // Mã quản lý nội bộ - KHÔNG hiển thị ra website, chỉ để admin phân biệt các
+  // sản phẩm trùng tên (vd cùng tên nhưng khác màu/phiên bản). Cho phép NULL
+  // (MySQL unique index coi mỗi NULL là khác nhau) vì các sản phẩm cũ chưa có SKU.
+  sku             String?                @unique
+  brand           String
+  price           Int
+  oldPrice        Int
+  rating          Float                  @default(0)
+  reviewCount     Int                    @default(0)
+  sold            Int                    @default(0)
+  // Số lượng tồn kho thật - tách riêng khỏi `sold` (đã bán) và `specs` (JSON tự
+  // do) để sau này dễ xuất file quản lý xuất nhập tồn.
+  stock           Int                    @default(0)
+  badge           Badge?
+  description     String                 @db.Text
+  specs           Json
+  category        Category               @relation(fields: [categoryId], references: [id])
+  categoryId      Int
+  subCategory     SubCategory?           @relation(fields: [subCategoryId], references: [id])
+  subCategoryId   Int?
+  subSubCategory  SubSubCategory?        @relation(fields: [subSubCategoryId], references: [id])
+  subSubCategoryId Int?
+  // Khuyến mãi "giờ vàng" có hạn: đếm ngược trên client khi promoEndsAt còn ở
+  // tương lai. promoSlots/promoSold là số suất khuyến mãi admin tự đặt cho
+  // mục đích marketing (tạo cảm giác khan hiếm) - độc lập với `sold` (tổng số
+  // đã bán thật của sản phẩm).
+  promoEndsAt     DateTime?
+  promoSlots      Int?
+  promoSold       Int                    @default(0)
+  images          ProductImage[]
+  orderItems      OrderItem[]
+  recommendations ProductRecommendation[] @relation("SourceProduct")
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+
+  @@index([categoryId])
+  @@index([subCategoryId])
+  @@index([subSubCategoryId])
+}
+
+model ProductImage {
+  id        Int     @id @default(autoincrement())
+  url       String
+  position  Int     @default(0)
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId Int
+}
+
+model Admin {
+  id           Int               @id @default(autoincrement())
+  email        String            @unique
+  password     String
+  name         String            @default("Admin")
+  // OWNER: tài khoản gốc, duy nhất người quản lý được thành viên. MANAGER:
+  // toàn quyền trừ quản lý thành viên. STAFF: chỉ Sản phẩm + Đơn hàng.
+  role         AdminRole         @default(STAFF)
+  // Tăng lên khi logout hoặc đổi mật khẩu để thu hồi mọi JWT đã phát hành
+  // trước đó (JWT vốn không tự hủy được phía server nếu chỉ verify chữ ký).
+  tokenVersion Int               @default(0)
+  createdAt    DateTime          @default(now())
+  activityLogs AdminActivityLog[]
+}
+
+enum AdminRole {
+  OWNER
+  MANAGER
+  STAFF
+}
+
+// Nhật ký hành động của thành viên quản trị (phục vụ "xuất báo cáo sử dụng").
+// Lưu lại tên/email admin tại thời điểm thao tác (denormalized) để báo cáo
+// vẫn còn ý nghĩa ngay cả khi tài khoản đó sau này bị xóa.
+model AdminActivityLog {
+  id         Int      @id @default(autoincrement())
+  admin      Admin?   @relation(fields: [adminId], references: [id], onDelete: SetNull)
+  adminId    Int?
+  adminName  String
+  adminEmail String
+  action     String
+  entityType String
+  entityId   Int?
+  detail     String   @db.Text
+  createdAt  DateTime @default(now())
+
+  @@index([adminId])
+  @@index([createdAt])
+}
+
+model Customer {
+  id               Int       @id @default(autoincrement())
+  name             String
+  // Không còn @unique - cho phép đăng ký lại bằng email đã từng bị xoá (xem
+  // ghi chú ở deletedAt). Tính duy nhất chỉ áp dụng cho tài khoản CÒN hoạt
+  // động (deletedAt: null), được kiểm tra ở tầng ứng dụng (customerAuthController,
+  // adminCustomersController), không phải ở DB.
+  email            String
+  phone            String?
+  // Null cho tài khoản chỉ đăng nhập qua Google/Facebook (chưa từng đặt mật
+  // khẩu) - login() phải kiểm tra null trước khi bcrypt.compare.
+  password         String?
+  googleId         String?   @unique
+  facebookId       String?   @unique
+  resetToken       String?
+  resetTokenExpiry DateTime?
+  // Tăng lên khi logout hoặc đặt lại mật khẩu để thu hồi mọi JWT đã phát
+  // hành trước đó (JWT vốn không tự hủy được phía server nếu chỉ verify
+  // chữ ký).
+  tokenVersion     Int       @default(0)
+  // Cờ admin tự đánh dấu thủ công ở /admin/customers khi thấy khách hàng
+  // cần chú ý đặc biệt - độc lập với các cờ tự động (contact NEW, chat
+  // needsHelp) để admin luôn có thể tự quyết định, không chỉ dựa vào suy đoán.
+  needsAttention   Boolean   @default(false)
+  // Xoá mềm - khách tự xoá tài khoản (deleteAccount) chỉ đánh dấu thời điểm
+  // xoá thay vì xoá hẳn dòng, để giữ lại lịch sử đơn hàng + vẫn hiện đúng
+  // email đã xoá trong báo cáo admin. Login/me đều chặn khi trường này khác
+  // null; email đã xoá được phép đăng ký lại (tạo dòng Customer mới, dòng cũ
+  // vẫn giữ nguyên cho báo cáo).
+  deletedAt        DateTime?
+  createdAt        DateTime  @default(now())
+  orders           Order[]
+  contactMessages  ContactMessage[]
+  chatMessages     ChatMessage[]
+  newsletterSubscription NewsletterSubscription?
+
+  @@index([email])
+}
+
+// Nhật ký khách hàng tự thay đổi hồ sơ/xoá tài khoản - khác AdminActivityLog
+// (đó là hành động của ADMIN, đây là hành động của chính KHÁCH HÀNG). Snapshot
+// tên/email lúc ghi để log vẫn đọc được đầy đủ dù sau này customerId không
+// còn khớp dữ liệu hiện tại (không có quan hệ FK tới Customer, giống cách
+// AdminActivityLog snapshot adminName/adminEmail).
+model CustomerActivityLog {
+  id            Int      @id @default(autoincrement())
+  customerId    Int?
+  customerName  String
+  customerEmail String
+  action        String
+  detail        String   @db.Text
+  createdAt     DateTime @default(now())
+}
+
+model Order {
+  id            Int           @id @default(autoincrement())
+  code          String        @unique
+  customer      Customer?     @relation(fields: [customerId], references: [id])
+  customerId    Int?
+  customerName  String
+  phone         String
+  address       String
+  note          String?       @db.Text
+  paymentMethod PaymentMethod @default(COD)
+  status        OrderStatus   @default(PENDING)
+  total         Int
+  items         OrderItem[]
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+}
+
+model OrderItem {
+  id        Int     @id @default(autoincrement())
+  order     Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderId   Int
+  product   Product @relation(fields: [productId], references: [id])
+  productId Int
+  name      String
+  price     Int
+  quantity  Int
+  image     String?
+}
+
+model ContactMessage {
+  id         Int            @id @default(autoincrement())
+  name       String
+  email      String?
+  phone      String?
+  subject    ContactSubject @default(KHAC)
+  message    String         @db.Text
+  status     ContactStatus  @default(NEW)
+  // Chỉ được gắn khi người gửi đang đăng nhập lúc gửi form Liên hệ (token
+  // khách hàng tự động đính kèm qua apiClient) - null nếu khách vãng lai.
+  customer   Customer?      @relation(fields: [customerId], references: [id])
+  customerId Int?
+  createdAt  DateTime       @default(now())
+}
+
+// Đăng ký nhận tin ở Footer - mở cho mọi người, chỉ cần email, không bắt
+// buộc đăng nhập. Nếu email trùng với một tài khoản khách hàng có sẵn (lúc
+// đăng ký nhận tin hoặc tra cứu sau này), tự động gắn customerId để hiển thị
+// trong trang quản lý khách hàng.
+model NewsletterSubscription {
+  id           Int       @id @default(autoincrement())
+  email        String    @unique
+  customer     Customer? @relation(fields: [customerId], references: [id])
+  customerId   Int?      @unique
+  subscribedAt DateTime  @default(now())
+}
+
+// Lịch sử chat với chatbot (ai-service ghi trực tiếp qua raw SQL, không qua
+// Prisma Client vì ai-service là service Python riêng). customerId chỉ có
+// khi khách đã đăng nhập lúc chat (ChatWidget gửi kèm JWT); khách vãng lai
+// vẫn được trả lời bình thường nhưng không gắn được với ai. needsHelp tự
+// động bật khi câu trả lời của bot có nhắc tới hotline (nghĩa là bot không
+// tự giải quyết được, gợi ý khách gọi người thật).
+model ChatMessage {
+  id         Int       @id @default(autoincrement())
+  customer   Customer? @relation(fields: [customerId], references: [id])
+  customerId Int?
+  message    String    @db.Text
+  reply      String    @db.Text
+  needsHelp  Boolean   @default(false)
+  createdAt  DateTime  @default(now())
+}
+
+// Bảng cấu hình chung toàn site - chỉ có đúng 1 dòng (id cố định = 1), sửa
+// qua trang admin /admin/settings. Server và ai-service (chatbot) đều đọc
+// từ đây thay vì hardcode hotline/địa chỉ rải rác nhiều nơi.
+model SiteSettings {
+  id               Int    @id @default(1)
+  hotline          String
+  // Số điện thoại riêng cho chatbot đọc ra khi tư vấn - tách khỏi `hotline`
+  // (số hiển thị header/footer/liên hệ) vì không nhất thiết phải trùng nhau,
+  // vd hotline chăm sóc khách hàng chung khác với đường dây tư vấn nhanh của
+  // chatbot. Để trống (null) thì chatbot tự dùng lại `hotline` như trước.
+  chatbotPhone     String?
+  email            String
+  address          String
+  companyName      String
+  companyTaxCode   String
+  workingHours     String
+  facebookUrl      String?
+  zaloUrl          String?
+  youtubeUrl       String?
+  tiktokUrl        String?
+  instagramUrl     String?
+  // Đoạn giới thiệu chính của trang "Giới thiệu" - phần còn lại của trang
+  // (giá trị cốt lõi, hành trình phát triển, số liệu thống kê) vẫn cố định
+  // trong code vì đó là thiết kế/khung trang, không phải nội dung hay đổi.
+  aboutText        String @db.Text
+  // Mỗi phần tử: { title, description } - 4 mục cam kết dịch vụ trên trang chủ
+  // (Giao Hàng Siêu Tốc, Chính Hãng 100%...). Icon/màu vẫn cố định trong code
+  // theo đúng vị trí (giống aboutText, chỉ nội dung admin sửa được).
+  coreFeatures     Json
+  // Mỗi phần tử: { title, description } - các bước ở trang "Hướng dẫn mua hàng".
+  buyingGuideSteps Json
+  // Mỗi phần tử: { question, answer } - trang "Câu hỏi thường gặp".
+  faqItems         Json
+  // Màu nền / ảnh nền tuỳ chỉnh theo từng khu vực (header/footer/section trang
+  // chủ) - phục vụ đổi giao diện theo mùa/sự kiện. Key là zone id cố định
+  // (danh sách ở client+server constants/themeZones.js), value luôn
+  // { bg, image } (cả 2 có thể null). Zone vắng mặt hoặc cả field null =
+  // dùng màu mặc định trong CSS, không đổi gì.
+  themeZones       Json?
+  // Icon "Đã thông báo Bộ Công Thương" ở footer + link tới trang xác nhận
+  // của cơ quan chức năng (vd online.gov.vn). Chưa đăng ký thì cả 2 để trống
+  // - footer tự hiện placeholder "Chưa thông báo" trung thực, không giả mạo
+  // đã đăng ký. Khi đăng ký xong, admin upload đúng icon + link thật vào đây.
+  complianceBadgeImage String?
+  complianceBadgeUrl   String?
+  // Banner dọc cạnh mỗi danh mục ở trang chủ (client/src/pages/Home.jsx) -
+  // mỗi phần tử: { categorySlug, image, eyebrow, title, priceLabel, perk,
+  // theme ('theme-amber'|'theme-dark'), side ('left'|'right'), linkType
+  // ('product'|'brand'|'category'), linkValue }. `image` rỗng = danh mục đó
+  // chưa có banner, section trang chủ tự hiện bình thường không banner.
+  // `linkValue` tuỳ theo linkType: product = đường dẫn trang sản phẩm dán
+  // tay, brand = tên nhãn hiệu, category = slug danh mục.
+  categoryBanners  Json?
+  // Ảnh nền trang trí áp dụng cho TẤT CẢ các trang công khai (client/src/layout/
+  // Layout.jsx) - null = dùng nền gradient vàng hổ phách mặc định theo màu
+  // thương hiệu (định nghĩa sẵn trong CSS .site-bg-wrap), admin upload ảnh thì
+  // ảnh thay thế gradient đó. Dùng chung endpoint upload với banner/theme zone.
+  pageBackgroundImage String?
+  // 2 banner phụ cạnh slider chính ở trang chủ (client/src/pages/Home.jsx) -
+  // mỗi phần tử: { image, title, linkType ('product'|'brand'|'category'),
+  // linkValue }. `image` rỗng = banner đó chưa cấu hình, cột banner phụ tự
+  // ẩn slot đó (ẩn cả cột nếu không banner nào có ảnh, slider chính chiếm
+  // trọn chiều rộng). `linkValue` tuỳ linkType, giống categoryBanners.
+  heroSideBanners  Json?
+  updatedAt        DateTime @updatedAt
+}
+
+// Cấu hình SMTP để gửi email (chào mừng, đặt lại mật khẩu) - tách khỏi
+// SiteSettings vì SiteSettings được trả về công khai qua GET /api/settings
+// cho client đọc (hotline, footer...), không được lẫn thông tin nhạy cảm
+// (mật khẩu SMTP) vào response công khai đó. Model này chỉ có route admin
+// riêng (OWNER/MANAGER). Chưa cấu hình (mọi field null) thì mailer.js tự
+// rơi về biến môi trường SMTP_*/.env, rồi rơi về in link ra console nếu
+// cũng chưa có (xem server/src/utils/mailer.js).
+model MailSettings {
+  id         Int      @id @default(1)
+  smtpHost   String?
+  smtpPort   Int?
+  smtpSecure Boolean  @default(false)
+  smtpUser   String?
+  smtpPass   String?
+  mailFrom   String?
+  updatedAt  DateTime @updatedAt
+}
+
+// Cấu hình đăng nhập Google/Facebook cho khách hàng - tách khỏi SiteSettings
+// vì facebookAppSecret là bí mật, không được lộ qua GET /api/settings công
+// khai. googleClientId/facebookAppId KHÔNG bí mật (client cần dùng để vẽ nút
+// đăng nhập) nên settingsController.js tự gộp riêng 2 field này vào response
+// công khai, không gộp facebookAppSecret. Chưa cấu hình thì
+// customerAuthController.js tự rơi về biến môi trường GOOGLE_CLIENT_ID/
+// FACEBOOK_APP_SECRET trong .env (cách cấu hình cũ trước khi có bảng này).
+model OAuthSettings {
+  id                Int      @id @default(1)
+  googleClientId    String?
+  facebookAppId     String?
+  facebookAppSecret String?
+  updatedAt         DateTime @updatedAt
+}
+
+// Bộ đếm lượt thích trang + lượt truy cập - tách khỏi SiteSettings vì đây là
+// số liệu ghi liên tục (mỗi click, mỗi lần tải trang) chứ không phải nội
+// dung admin chỉnh sửa, không muốn 2 mối quan tâm khác nhau chung 1 dòng.
+// Cũng chỉ 1 dòng duy nhất (id cố định = 1), giống SiteSettings.
+model SiteStats {
+  id         Int @id @default(1)
+  likeCount  Int @default(0)
+  visitCount Int @default(0)
+}
+
+// Ghi bởi ai-service (Python/FastAPI) — xem Phase 7. Node chỉ đọc.
+model SalesReport {
+  id            Int      @id @default(autoincrement())
+  reportDate    DateTime @unique @db.Date
+  totalOrders   Int
+  totalRevenue  Int
+  topProductIds Json
+  generatedAt   DateTime @default(now())
+}
+
+// Ghi bởi ai-service (Python/FastAPI) — xem Phase 7. Node chỉ đọc.
+model ProductRecommendation {
+  id                Int     @id @default(autoincrement())
+  sourceProduct     Product @relation("SourceProduct", fields: [sourceProductId], references: [id], onDelete: Cascade)
+  sourceProductId   Int
+  recommendedIds    Json
+  updatedAt         DateTime @updatedAt
+
+  @@unique([sourceProductId])
+}
